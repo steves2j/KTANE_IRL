@@ -1,0 +1,54 @@
+{
+  "version": "2.0.0",
+  "inputs": [
+    {
+      "id": "serialPort",
+      "type": "promptString",
+      "description": "Serial device (leave blank to auto-detect one /dev/cu.usbmodem*)",
+      "default": "${config:canbus.serialPort}"
+    }
+  ],
+  "tasks": [
+    {
+      "label": "CAN firmware: setup check",
+      "type": "shell",
+      "command": "${workspaceFolder}/Software/CanBusSysFirmware/scripts/setup-macos.sh",
+      "args": ["--check"],
+      "problemMatcher": []
+    },
+    {
+      "label": "CAN firmware: build",
+      "type": "shell",
+      "command": "${workspaceFolder}/Software/CanBusSysFirmware/scripts/build.sh",
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": ["$gcc"]
+    },
+    {
+      "label": "CAN firmware: clean",
+      "type": "shell",
+      "command": "rm -rf \"${workspaceFolder}/Software/CanBusSysFirmware/micropython/mpy-cross/build\" \"${workspaceFolder}/Software/CanBusSysFirmware/micropython/ports/esp32/build-SEEED_XIAO_ESP32S3\"",
+      "problemMatcher": []
+    },
+    {
+      "label": "CAN firmware: erase",
+      "type": "shell",
+      "command": "${workspaceFolder}/Software/CanBusSysFirmware/scripts/erase.sh",
+      "options": { "env": { "CANBUS_SERIAL_PORT": "${input:serialPort}" } },
+      "problemMatcher": []
+    },
+    {
+      "label": "CAN firmware: flash",
+      "type": "shell",
+      "command": "${workspaceFolder}/Software/CanBusSysFirmware/scripts/flash.sh",
+      "options": { "env": { "CANBUS_SERIAL_PORT": "${input:serialPort}" } },
+      "problemMatcher": []
+    },
+    {
+      "label": "CAN firmware: serial monitor",
+      "type": "shell",
+      "command": "${workspaceFolder}/Software/CanBusSysFirmware/scripts/monitor.sh",
+      "options": { "env": { "CANBUS_SERIAL_PORT": "${input:serialPort}" } },
+      "problemMatcher": []
+    }
+  ]
+}

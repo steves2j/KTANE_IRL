@@ -1,0 +1,15 @@
+{
+  "canbus.serialPort": "",
+  "C_Cpp.default.compileCommands": "${workspaceFolder}/Software/CanBusSysFirmware/micropython/ports/esp32/build-SEEED_XIAO_ESP32S3/compile_commands.json",
+  "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+  "cmake.configureOnOpen": false,
+  "cmake.useCMakePresets": "never",
+  "files.associations": {
+    "*.ipp": "cpp",
+    "*.tpp": "cpp"
+  },
+  "search.exclude": {
+    "**/.build-tools": true,
+    "**/build-SEEED_XIAO_ESP32S3": true
+  }
+}

@@ -4,3 +4,7 @@ Gerber
 *-backups
 .lck
 
+# Local ESP32/MicroPython toolchains and generated firmware build products.
+Software/CanBusSysFirmware/.build-tools/
+Software/CanBusSysFirmware/micropython/mpy-cross/build/
+Software/CanBusSysFirmware/micropython/ports/esp32/build-*/
