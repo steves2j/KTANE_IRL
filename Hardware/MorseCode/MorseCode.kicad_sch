@@ -1096,7 +1096,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "ec5976f9-0838-49d7-8759-ca13e449989c")
-		(property "Reference" "Z"
+		(property "Reference" "Z1"
 			(at 254 38.1 0)
 			(hide yes)
 			(show_name no)
@@ -1154,7 +1154,7 @@
 		(instances
 			(project "MorseCode"
 				(path "/16bba23a-a500-415f-8344-fab3afafd4a7"
-					(reference "Z")
+					(reference "Z1")
 					(unit 1)
 				)
 			)
