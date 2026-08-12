@@ -530,6 +530,7 @@
       "netlist": "",
       "plot": "gerber",
       "specctra_dsn": "",
+      "step": "",
       "vrml": ""
     },
     "page_layout_descr_file": ""
@@ -652,7 +653,7 @@
         "uuid": "7b3a0779-c75f-4481-84cb-155fe1398dfb"
       }
     ],
-    "used_designators": "#GND1-13,C1-5,IC1-2,TP1-2,V1,U1,U4,Y1,R1-3,JP1",
+    "used_designators": "",
     "variants": []
   },
   "sheets": [

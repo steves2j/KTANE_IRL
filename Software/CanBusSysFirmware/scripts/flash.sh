@@ -9,4 +9,5 @@ source "${SCRIPT_DIR}/common.sh"
 activate_idf
 port="$(resolve_serial_port)"
 [[ -f "${BUILD_DIR}/firmware.bin" ]] || fail "no firmware build found; run scripts/build.sh first."
-make -C "${MICROPYTHON_DIR}/ports/esp32" BOARD="${BOARD}" BOARD_DIR="${BOARD_DIR}" PORT="${port}" flash
+# MicroPython's ESP32 Makefile names the ESP-IDF flash target "deploy".
+make -C "${MICROPYTHON_DIR}/ports/esp32" BOARD="${BOARD}" BOARD_DIR="${BOARD_DIR}" PORT="${port}" deploy
