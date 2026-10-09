@@ -16,6 +16,7 @@ from machine import I2C, Pin
 from time import sleep_ms, ticks_diff, ticks_ms
 import framebuf
 import epaper
+import tft
 
 
 # XIAO ESP32-S3 GPIO numbers corresponding to the stated D-pin labels.
@@ -29,6 +30,12 @@ TOUCH_SCL = 6     # D5
 EPD_BUSY = 3      # D2; SSD1683 BUSY is active high on this module
 EPD_RESET = 2     # D1
 TOUCH_RESET = 1  # D0
+
+# ST7789P3 status display shares SPI3 SCK/D8, MOSI/D10 and DC/D3 with the
+# e-paper, but uses an independent CS, reset and active-low backlight.
+TFT_CS = 43         # D6
+TFT_RESET = 1       # D0
+TFT_BACKLIGHT = 13  # D14; low enables backlight
 
 WIDTH = 400
 HEIGHT = 300
@@ -161,10 +168,18 @@ def restore_button_with_full_refresh(buffer, button_index):
 
 
 def native_epaper_init():
-    """Initialise the compiled C/C++ SSD1683 usermod on exclusive SPI3."""
+    """Initialise the compiled C/C++ SSD1683 usermod on SPI3."""
     log("EPD native init: SPI3, CS/D7 DC/D3 RESET/D1 BUSY/D2 SCK/D8 MOSI/D10")
     epaper.init(EPD_CS, EPD_DC, EPD_RESET, EPD_BUSY, EPD_SCK, EPD_MOSI)
     log("EPD native status:", epaper.status())
+
+
+def native_tft_init():
+    """Initialise the compiled ST7789P3 usermod, then show its title."""
+    log("TFT native init: CS/D6 RESET/D0 BL/D14; SPI3 SCK/D8 MOSI/D10 DC/D3")
+    tft.init(TFT_CS, EPD_DC, TFT_RESET, TFT_BACKLIGHT, EPD_SCK, EPD_MOSI)
+    log("TFT native status:", tft.status())
+    tft.text("Who's on first")
 
 
 def make_test_screen():
@@ -188,7 +203,15 @@ def main():
 
     touch = FT6336()
     touch.init(reset=True)
-    log("initialising native SSD1683 and performing full refresh...")
+    # Create the shared SPI3 host, but defer the differential baseline until
+    # after TFT setup.  This SSD1683 requires the baseline to be the last
+    # display-bus operation before its first partial waveform.
+    log("initialising native SSD1683 before TFT setup...")
+    native_epaper_init()
+    epaper.detach()
+    native_tft_init()
+    epaper.attach()
+    log("reinitialising native SSD1683 and performing final full refresh...")
     native_epaper_init()
     buffer = make_test_screen()
     log("EPD native full refresh:", len(buffer), "bytes")
@@ -235,6 +258,10 @@ def main():
             log("button", button_index + 1, "contact; inverting", rect)
             log("EPD native partial x=%d y=%d w=%d h=%d" % rect)
             epaper.partial(buffer, *rect)
+            epaper.detach()
+            log("TFT showing button", button_index + 1)
+            tft.show_digit(button_index + 1)
+            epaper.attach()
 
         # Some FT6336 firmware revisions report a release as zero touches
         # rather than a final point with event=up.  Restore those too.

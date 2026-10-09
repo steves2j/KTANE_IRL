@@ -33,6 +33,12 @@ mp_obj_t epaper_init(size_t count, const mp_obj_t *args) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(epaper_init_obj, 6, 6, epaper_init);
 
+mp_obj_t epaper_detach() { return result_or_raise(epaper_service().detach()); }
+static MP_DEFINE_CONST_FUN_OBJ_0(epaper_detach_obj, epaper_detach);
+
+mp_obj_t epaper_attach() { return result_or_raise(epaper_service().attach()); }
+static MP_DEFINE_CONST_FUN_OBJ_0(epaper_attach_obj, epaper_attach);
+
 mp_obj_t epaper_full(mp_obj_t framebuffer_obj) {
     mp_buffer_info_t buffer;
     return result_or_raise(epaper_service().full_refresh(framebuffer_from_obj(framebuffer_obj, &buffer), buffer.len));
@@ -70,6 +76,8 @@ static MP_DEFINE_CONST_FUN_OBJ_0(epaper_status_obj, epaper_status);
 const mp_rom_map_elem_t epaper_module_globals_table[] = {
     {MP_ROM_QSTR(MP_QSTR___name__), MP_ROM_QSTR(MP_QSTR_epaper)},
     {MP_ROM_QSTR(MP_QSTR_init), MP_ROM_PTR(&epaper_init_obj)},
+    {MP_ROM_QSTR(MP_QSTR_detach), MP_ROM_PTR(&epaper_detach_obj)},
+    {MP_ROM_QSTR(MP_QSTR_attach), MP_ROM_PTR(&epaper_attach_obj)},
     {MP_ROM_QSTR(MP_QSTR_full), MP_ROM_PTR(&epaper_full_obj)},
     {MP_ROM_QSTR(MP_QSTR_base_map), MP_ROM_PTR(&epaper_base_map_obj)},
     {MP_ROM_QSTR(MP_QSTR_partial), MP_ROM_PTR(&epaper_partial_obj)},

@@ -33,6 +33,9 @@ struct State {
     esp_err_t last_error = ESP_OK;
     EpaperPins pins{};
     bool pins_configured = false;
+    // SPI3 can be created first by the ST7789 usermod.  This service still
+    // owns only its own device handle; it must not free a shared host.
+    bool bus_owned = false;
 };
 
 State g_state;
@@ -193,8 +196,9 @@ esp_err_t ensure_bus(const EpaperPins *pins = nullptr) {
         // Reconfiguration is only allowed through init(); no display transfer
         // can be in progress because init owns the service mutex.
         spi_bus_remove_device(g_state.spi);
-        spi_bus_free(kSpiHost);
+        if (g_state.bus_owned) spi_bus_free(kSpiHost);
         g_state.spi = nullptr;
+        g_state.bus_owned = false;
         g_state.initialized = false;
         log_line("reconfiguring SPI bus for new pin assignment");
         if (g_state.mutex) {
@@ -210,8 +214,10 @@ esp_err_t ensure_bus(const EpaperPins *pins = nullptr) {
     log_line("configuring SPI3: CS=%d DC=%d RESET=%d BUSY=%d SCK=%d MOSI=%d @ %d Hz",
              g_state.pins.cs, g_state.pins.dc, g_state.pins.reset, g_state.pins.busy,
              g_state.pins.sck, g_state.pins.mosi, kSpiHz);
-    g_state.mutex = xSemaphoreCreateMutex();
-    if (!g_state.mutex) return ESP_ERR_NO_MEM;
+    if (!g_state.mutex) {
+        g_state.mutex = xSemaphoreCreateMutex();
+        if (!g_state.mutex) return ESP_ERR_NO_MEM;
+    }
 
     gpio_config_t output{};
     output.pin_bit_mask = (1ULL << g_state.pins.reset) | (1ULL << g_state.pins.dc);
@@ -238,15 +244,31 @@ esp_err_t ensure_bus(const EpaperPins *pins = nullptr) {
     bus.miso_io_num = -1; // The panel's D9/MISO pad is not connected.
     bus.quadwp_io_num = -1;
     bus.quadhd_io_num = -1;
-    bus.max_transfer_sz = kBytesPerRow;
-    if ((error = spi_bus_initialize(kSpiHost, &bus, SPI_DMA_CH_AUTO)) != ESP_OK) return error;
+    // This is a shared SPI3 host.  The SSD1683 itself transfers 50-byte rows,
+    // while the attached ST7789P3 usermod sends 256-byte pixel blocks.
+    // Increasing the host limit does not change e-paper transactions.
+    bus.max_transfer_sz = 40000;
+    error = spi_bus_initialize(kSpiHost, &bus, SPI_DMA_CH_AUTO);
+    if (error == ESP_OK) {
+        g_state.bus_owned = true;
+    } else if (error == ESP_ERR_INVALID_STATE) {
+        // TFT has already configured the same SPI3 SCK/MOSI bus.  Attach this
+        // display as a second device with its independent CS line.
+        g_state.bus_owned = false;
+    } else {
+        return error;
+    }
 
     spi_device_interface_config_t device{};
     device.clock_speed_hz = kSpiHz;
     device.mode = 0;
     device.spics_io_num = g_state.pins.cs;
     device.queue_size = 1;
-    if ((error = spi_bus_add_device(kSpiHost, &device, &g_state.spi)) != ESP_OK) return error;
+    if ((error = spi_bus_add_device(kSpiHost, &device, &g_state.spi)) != ESP_OK) {
+        if (g_state.bus_owned) spi_bus_free(kSpiHost);
+        g_state.bus_owned = false;
+        return error;
+    }
     return ESP_OK;
 }
 
@@ -300,6 +322,33 @@ esp_err_t EpaperService::init(const EpaperPins &pins) {
     error = full_init();
     give_lock();
     log_line("init %s (error=%d)", error == ESP_OK ? "complete" : "failed", error);
+    return g_state.last_error = error;
+}
+
+esp_err_t EpaperService::detach() {
+    if (!g_state.spi) return g_state.last_error = ESP_OK;
+    if (!take_lock()) return g_state.last_error = ESP_ERR_TIMEOUT;
+    const esp_err_t error = spi_bus_remove_device(g_state.spi);
+    if (error == ESP_OK) {
+        g_state.spi = nullptr;
+        // Explicitly deselect the panel while the TFT owns the shared wires.
+        gpio_config_t cs{};
+        cs.pin_bit_mask = 1ULL << g_state.pins.cs;
+        cs.mode = GPIO_MODE_OUTPUT;
+        cs.pull_up_en = GPIO_PULLUP_DISABLE;
+        cs.pull_down_en = GPIO_PULLDOWN_DISABLE;
+        cs.intr_type = GPIO_INTR_DISABLE;
+        gpio_config(&cs);
+        gpio_set_level(static_cast<gpio_num_t>(g_state.pins.cs), 1);
+        log_line("SPI device detached; CS=%d held high", g_state.pins.cs);
+    }
+    give_lock();
+    return g_state.last_error = error;
+}
+
+esp_err_t EpaperService::attach() {
+    const esp_err_t error = ensure_bus();
+    if (error == ESP_OK) log_line("SPI device attached");
     return g_state.last_error = error;
 }
 
