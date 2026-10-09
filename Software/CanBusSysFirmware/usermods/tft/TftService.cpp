@@ -217,6 +217,11 @@ esp_err_t TftService::draw_text(const char *text) {
     auto glyph = [](char c, uint8_t out[5]) {
         std::memset(out, 0, 5);
         switch (c) {
+            case 'A': { const uint8_t v[] = {0x1E,0x05,0x05,0x05,0x1E}; std::memcpy(out,v,5); } break;
+            case 'B': { const uint8_t v[] = {0x1F,0x15,0x15,0x15,0x0A}; std::memcpy(out,v,5); } break;
+            case 'C': { const uint8_t v[] = {0x0E,0x11,0x11,0x11,0x0A}; std::memcpy(out,v,5); } break;
+            case 'D': { const uint8_t v[] = {0x1F,0x11,0x11,0x11,0x0E}; std::memcpy(out,v,5); } break;
+            case 'E': { const uint8_t v[] = {0x1F,0x15,0x15,0x15,0x11}; std::memcpy(out,v,5); } break;
             case 'W': { const uint8_t v[] = {0x1F,0x10,0x0C,0x10,0x1F}; std::memcpy(out,v,5); } break;
             case 'H': { const uint8_t v[] = {0x1F,0x04,0x04,0x04,0x1F}; std::memcpy(out,v,5); } break;
             case 'O': { const uint8_t v[] = {0x0E,0x11,0x11,0x11,0x0E}; std::memcpy(out,v,5); } break;
@@ -226,6 +231,19 @@ esp_err_t TftService::draw_text(const char *text) {
             case 'I': { const uint8_t v[] = {0x11,0x11,0x1F,0x11,0x11}; std::memcpy(out,v,5); } break;
             case 'R': { const uint8_t v[] = {0x1F,0x05,0x0D,0x15,0x11}; std::memcpy(out,v,5); } break;
             case 'T': { const uint8_t v[] = {0x01,0x01,0x1F,0x01,0x01}; std::memcpy(out,v,5); } break;
+            case 'G': { const uint8_t v[] = {0x0E,0x11,0x15,0x15,0x1D}; std::memcpy(out,v,5); } break;
+            case 'J': { const uint8_t v[] = {0x08,0x10,0x10,0x10,0x0F}; std::memcpy(out,v,5); } break;
+            case 'K': { const uint8_t v[] = {0x1F,0x04,0x0A,0x11,0x00}; std::memcpy(out,v,5); } break;
+            case 'L': { const uint8_t v[] = {0x1F,0x10,0x10,0x10,0x10}; std::memcpy(out,v,5); } break;
+            case 'M': { const uint8_t v[] = {0x1F,0x02,0x04,0x02,0x1F}; std::memcpy(out,v,5); } break;
+            case 'P': { const uint8_t v[] = {0x1F,0x05,0x05,0x05,0x02}; std::memcpy(out,v,5); } break;
+            case 'Q': { const uint8_t v[] = {0x0E,0x11,0x19,0x11,0x1E}; std::memcpy(out,v,5); } break;
+            case 'U': { const uint8_t v[] = {0x0F,0x10,0x10,0x10,0x0F}; std::memcpy(out,v,5); } break;
+            case 'V': { const uint8_t v[] = {0x07,0x08,0x10,0x08,0x07}; std::memcpy(out,v,5); } break;
+            case 'X': { const uint8_t v[] = {0x1B,0x04,0x04,0x04,0x1B}; std::memcpy(out,v,5); } break;
+            case 'Y': { const uint8_t v[] = {0x03,0x04,0x18,0x04,0x03}; std::memcpy(out,v,5); } break;
+            case 'Z': { const uint8_t v[] = {0x19,0x15,0x15,0x15,0x13}; std::memcpy(out,v,5); } break;
+            case '?': { const uint8_t v[] = {0x02,0x01,0x15,0x05,0x02}; std::memcpy(out,v,5); } break;
             case '\'': { const uint8_t v[] = {0x00,0x18,0x04,0x00,0x00}; std::memcpy(out,v,5); } break;
         }
     };

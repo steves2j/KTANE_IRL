@@ -17,6 +17,12 @@ from time import sleep_ms, ticks_diff, ticks_ms
 import framebuf
 import epaper
 import tft
+import neopixel
+import urandom
+try:
+    import mcp2518
+except ImportError:
+    mcp2518 = None
 
 
 # XIAO ESP32-S3 GPIO numbers corresponding to the stated D-pin labels.
@@ -36,6 +42,8 @@ TOUCH_RESET = 1  # D0
 TFT_CS = 43         # D6
 TFT_RESET = 1       # D0
 TFT_BACKLIGHT = 13  # D14; low enables backlight
+WS2812_PIN = 38     # D11 / GPIO38
+WS2812_COUNT = 4
 
 WIDTH = 400
 HEIGHT = 300
@@ -47,6 +55,7 @@ BUTTON_COLUMNS = 2
 BUTTON_ROWS = 3
 BUTTON_WIDTH = WIDTH // BUTTON_COLUMNS
 BUTTON_HEIGHT = HEIGHT // BUTTON_ROWS
+POSITION_NAMES = ("top-left", "top-right", "middle-left", "middle-right", "bottom-left", "bottom-right")
 
 
 def log(*items):
@@ -116,7 +125,8 @@ def draw_button(canvas, x, y, width, height, label):
     border = 10
     canvas.fill_rect(x, y, width, height, 0)
     canvas.fill_rect(x + border, y + border, width - border * 2, height - border * 2, 1)
-    draw_centered_text(canvas, label, x + width // 2, y + height // 2)
+    scale = 2 if len(label) > 6 else (3 if len(label) > 4 else 4)
+    draw_centered_text(canvas, label, x + width // 2, y + height // 2, scale)
 
 
 def button_index_for_touch(x, y):
@@ -149,24 +159,6 @@ def invert_button(buffer, button_index):
     return column * BUTTON_WIDTH, y_start, BUTTON_WIDTH, BUTTON_HEIGHT
 
 
-def restore_button_with_full_refresh(buffer, button_index):
-    """Clear a momentary press with one clean full refresh.
-
-    Native ``epaper.full`` loads both SSD1683 RAM planes before triggering the
-    normal waveform, so it is already the required differential-update base.
-    Calling ``base_map`` afterwards would trigger a second, unnecessary full
-    refresh.
-    """
-    rect = invert_button(buffer, button_index)
-    log("button", button_index + 1, "released; full refresh restoring", rect)
-    # The local waveform can retain artefacts outside its nominal window on
-    # this panel. A normal full refresh clears those artefacts and restores
-    # both controller RAM planes to the retained framebuffer.
-    native_epaper_init()
-    log("EPD native full refresh:", len(buffer), "bytes")
-    epaper.full(buffer)
-
-
 def native_epaper_init():
     """Initialise the compiled C/C++ SSD1683 usermod on SPI3."""
     log("EPD native init: SPI3, CS/D7 DC/D3 RESET/D1 BUSY/D2 SCK/D8 MOSI/D10")
@@ -182,18 +174,209 @@ def native_tft_init():
     tft.text("Who's on first")
 
 
-def make_test_screen():
-    """Return the six-button layout used for the future Who's on First UI."""
+def make_button_screen(labels):
+    """Return the six dynamic Who's on First button labels."""
     buffer = bytearray(b"\xFF" * BUFFER_BYTES)  # EPD: 1 is white, 0 is black.
     canvas = framebuf.FrameBuffer(buffer, WIDTH, HEIGHT, framebuf.MONO_HMSB)
-    labels = ("ONE", "TWO", "THREE", "FOUR", "FIVE", "SIX")
     for index, label in enumerate(labels):
         column = index % 2
         row = index // 2
         draw_button(canvas, column * BUTTON_WIDTH, row * BUTTON_HEIGHT,
                     BUTTON_WIDTH, BUTTON_HEIGHT, label)
-    log("framebuffer ready:", len(buffer), "bytes; white=0xFF, black text=0 bits")
     return buffer
+
+
+def make_solved_screen():
+    """Six happy faces make the solved, touch-locked state unambiguous."""
+    buffer = bytearray(b"\xFF" * BUFFER_BYTES)
+    canvas = framebuf.FrameBuffer(buffer, WIDTH, HEIGHT, framebuf.MONO_HMSB)
+    for index in range(6):
+        column, row = index % 2, index // 2
+        x, y = column * BUTTON_WIDTH, row * BUTTON_HEIGHT
+        canvas.fill_rect(x, y, BUTTON_WIDTH, BUTTON_HEIGHT, 0)
+        canvas.fill_rect(x + 10, y + 10, BUTTON_WIDTH - 20, BUTTON_HEIGHT - 20, 1)
+        draw_smiley(canvas, x + BUTTON_WIDTH // 2, y + BUTTON_HEIGHT // 2)
+    return buffer
+
+
+def draw_smiley(canvas, center_x, center_y):
+    """Draw a bold monochrome happy face without relying on font glyphs."""
+    radius = 34
+    inner = (radius - 2) * (radius - 2)
+    outer = radius * radius
+    for y in range(-radius, radius + 1):
+        for x in range(-radius, radius + 1):
+            distance = x * x + y * y
+            if inner <= distance <= outer:
+                canvas.pixel(center_x + x, center_y + y, 0)
+    # Eyes.
+    for eye_x in (-13, 13):
+        for y in range(-15, -6):
+            for x in range(eye_x - 4, eye_x + 5):
+                if (x - eye_x) * (x - eye_x) + (y + 11) * (y + 11) <= 16:
+                    canvas.pixel(center_x + x, center_y + y, 0)
+    # U-shaped smile: endpoints rise while the centre sits lower.
+    for x in range(-20, 21):
+        y = 19 - (x * x) // 25
+        canvas.fill_rect(center_x + x - 1, center_y + y - 1, 3, 3, 0)
+
+
+# Canonical manual Step 1: prompt -> button position (TL, TR, ML, MR, BL, BR).
+STEP_1 = {
+    "UR": 0, "FIRST": 1, "OKAY": 1, "C": 1,
+    "YES": 2, "NOTHING": 2, "THEY ARE": 2, "LED": 2,
+    "BLANK": 3, "READ": 3, "RED": 3, "YOU": 3, "YOUR": 3,
+    "YOU'RE": 3, "THEIR": 3,
+    "EMPTY": 4, "REED": 4, "LEED": 4, "THEY'RE": 4,
+    "DISPLAY": 5, "SAYS": 5, "NO": 5, "LEAD": 5, "HOLD ON": 5,
+    "YOU ARE": 5, "THERE": 5, "SEE": 5, "CEE": 5,
+}
+
+# Canonical manual Step 2: reference label -> priority order.
+PRIORITY = {
+ "READY":"YES OKAY WHAT MIDDLE LEFT PRESS RIGHT BLANK READY NO FIRST UHHH NOTHING WAIT",
+ "FIRST":"LEFT OKAY YES MIDDLE NO RIGHT NOTHING UHHH WAIT READY BLANK WHAT PRESS FIRST",
+ "NO":"BLANK UHHH WAIT FIRST WHAT READY RIGHT YES NOTHING LEFT PRESS OKAY NO",
+ "BLANK":"WAIT RIGHT OKAY MIDDLE BLANK", "NOTHING":"UHHH RIGHT OKAY MIDDLE YES BLANK NO PRESS LEFT WHAT WAIT FIRST NOTHING",
+ "YES":"OKAY RIGHT UHHH MIDDLE FIRST WHAT PRESS READY NOTHING YES", "WHAT":"UHHH WHAT",
+ "UHHH":"READY NOTHING LEFT WHAT OKAY YES RIGHT NO PRESS BLANK UHHH", "LEFT":"RIGHT LEFT",
+ "RIGHT":"YES NOTHING READY PRESS NO WAIT WHAT RIGHT", "MIDDLE":"BLANK READY OKAY WHAT NOTHING PRESS NO WAIT LEFT MIDDLE RIGHT FIRST UHHH YES",
+ "OKAY":"MIDDLE NO FIRST YES UHHH NOTHING WAIT OKAY LEFT READY BLANK PRESS WHAT RIGHT",
+ "WAIT":"UHHH NO BLANK OKAY YES LEFT FIRST PRESS WHAT WAIT NOTHING READY RIGHT MIDDLE",
+ "PRESS":"RIGHT MIDDLE YES READY PRESS OKAY NOTHING UHHH BLANK LEFT FIRST WHAT NO WAIT",
+ "YOU":"SURE YOU ARE YOUR YOU'RE NEXT UH HUH UR HOLD WHAT? YOU UH UH LIKE DONE U",
+ "YOU ARE":"YOUR NEXT LIKE UH HUH WHAT? DONE UH UH HOLD YOU U YOU'RE SURE UR YOU ARE",
+ "YOUR":"UH UH YOU ARE UH HUH YOUR NEXT UR SURE U YOU'RE YOU WHAT? HOLD LIKE DONE",
+ "YOU'RE":"YOU YOU'RE UR NEXT UH UH YOU ARE U YOUR WHAT? UH HUH SURE DONE LIKE HOLD",
+ "UR":"DONE U UR UH HUH WHAT? SURE YOUR HOLD YOU'RE LIKE NEXT UH UH YOU ARE YOU",
+ "U":"UH HUH SURE NEXT WHAT? YOU'RE UR UH UH DONE U YOU LIKE HOLD YOU ARE YOUR",
+ "UH HUH":"UH HUH YOUR YOU ARE YOU DONE HOLD UH UH NEXT SURE LIKE YOU'RE UR U WHAT?",
+ "UH UH":"UR U YOU ARE YOU'RE NEXT UH UH DONE YOU UH HUH LIKE YOUR SURE HOLD WHAT?",
+ "WHAT?":"YOU HOLD YOU'RE YOUR U DONE UH UH LIKE YOU ARE UH HUH UR NEXT WHAT? SURE",
+ "DONE":"SURE UH HUH NEXT WHAT? YOUR UR YOU'RE HOLD LIKE YOU U YOU ARE UH UH DONE",
+ "NEXT":"WHAT? UH HUH UH UH YOUR HOLD SURE NEXT LIKE DONE YOU ARE UR YOU'RE U YOU",
+ "HOLD":"YOU ARE U DONE UH UH YOU UR SURE WHAT? YOU'RE NEXT HOLD UH HUH YOUR LIKE",
+ "SURE":"YOU ARE DONE LIKE YOU'RE YOU HOLD UH HUH UR SURE U WHAT? NEXT YOUR UH UH",
+ "LIKE":"YOU'RE NEXT U UR HOLD DONE UH UH WHAT? UH HUH YOU LIKE SURE YOU ARE YOUR",
+}
+def parse_priority(raw):
+    """Keep the manual's multi-word labels intact in compact source tables."""
+    tokens = raw.split()
+    result = []
+    index = 0
+    while index < len(tokens):
+        if index + 1 < len(tokens) and tokens[index] == "YOU" and tokens[index + 1] == "ARE":
+            result.append("YOU ARE")
+            index += 2
+        elif index + 1 < len(tokens) and tokens[index] == "UH" and tokens[index + 1] in ("HUH", "UH"):
+            result.append("UH " + tokens[index + 1])
+            index += 2
+        else:
+            result.append(tokens[index])
+            index += 1
+    return result
+
+
+for _key in PRIORITY:
+    PRIORITY[_key] = parse_priority(PRIORITY[_key])
+
+BUTTON_WORDS = tuple(PRIORITY)
+PROMPTS = tuple(STEP_1)
+# Green is preserved under the observed red/blue channel reversal.  Use it for
+# both completed-stage indicators and the final solved-status indication.
+PIXEL_OFF, PIXEL_STAGE, PIXEL_PASS = (0, 0, 0), (0, 24, 0), (0, 24, 0)
+STATUS = {"passed": False, "failed": False, "in_progress": True, "strikes": 0, "stage": 1}
+pixels = None
+
+
+def shuffled_words():
+    words = list(BUTTON_WORDS)
+    for i in range(len(words) - 1, 0, -1):
+        j = urandom.getrandbits(16) % (i + 1)
+        words[i], words[j] = words[j], words[i]
+    return words
+
+
+def set_indicators():
+    """Pixel 4, then 3, then 2 records completed stages; pixel 1 is status."""
+    for i in range(WS2812_COUNT):
+        pixels[i] = PIXEL_OFF
+    completed = STATUS["stage"] - 1
+    for stage in range(completed):
+        pixels[3 - stage] = PIXEL_STAGE
+    # Pixel 1 is reserved solely for the green solved indication.
+    pixels[0] = PIXEL_PASS if STATUS["passed"] else PIXEL_OFF
+    pixels.write()
+
+
+def make_stage():
+    prompt = PROMPTS[urandom.getrandbits(16) % len(PROMPTS)]
+    labels = shuffled_words()[:6]
+    reference_index = STEP_1[prompt]
+    reference = labels[reference_index]
+    target = next(word for word in PRIORITY[reference] if word in labels)
+    return prompt, labels, target, reference
+
+
+def render_stage(prompt, labels):
+    """Update TFT first, then make e-paper's full/base refresh the final bus use."""
+    buffer = make_button_screen(labels)
+    log("stage", STATUS["stage"], "prompt=", prompt, "labels=", labels)
+    epaper.detach()
+    try:
+        tft.text(prompt)
+    except OSError as error:
+        log("TFT error", error, "continuing with e-paper")
+    epaper.attach()
+    return refresh_epaper(buffer)
+
+
+def refresh_epaper(buffer):
+    """Perform one full refresh and establish its RAM as the partial baseline.
+
+    ``epaper.full`` already writes the same image to both SSD1683 image planes
+    (0x24/current and 0x26/previous), then performs the visible full update.
+    Calling ``base_map`` immediately afterwards repeats that exact full update,
+    hence the previous double flash at every stage.
+    """
+    for attempt in range(1, 4):
+        try:
+            native_epaper_init()
+            epaper.full(buffer)
+            return buffer
+        except OSError as error:
+            log("EPD recovery attempt", attempt, "failed:", error)
+            sleep_ms(200)
+    log("EPD unavailable after recovery; retaining game state for next reset")
+    return buffer
+
+
+def partial_or_recover(buffer, rect):
+    try:
+        epaper.partial(buffer, *rect)
+        return True
+    except OSError as error:
+        log("EPD partial error", error, "; redrawing current stage")
+        refresh_epaper(buffer)
+        return False
+
+
+def poll_can_reset():
+    """RESET on any CAN identifier resets a solved module for the next bomb."""
+    if mcp2518 is None:
+        return False
+    try:
+        while True:
+            frame = mcp2518.recv()
+            if frame is None:
+                return False
+            identifier, payload = frame
+            if bytes(payload).upper().startswith(b"RESET"):
+                log("CAN RESET received on id=0x%X" % identifier)
+                return True
+    except OSError as error:
+        log("CAN receive error", error)
+        return False
 
 
 def main():
@@ -203,6 +386,11 @@ def main():
 
     touch = FT6336()
     touch.init(reset=True)
+    if mcp2518 is not None:
+        try:
+            log("MCP2518 reset listener:", mcp2518.start(), mcp2518.status())
+        except OSError as error:
+            log("MCP2518 unavailable; CAN RESET disabled:", error)
     # Create the shared SPI3 host, but defer the differential baseline until
     # after TFT setup.  This SSD1683 requires the baseline to be the last
     # display-bus operation before its first partial waveform.
@@ -213,21 +401,37 @@ def main():
     epaper.attach()
     log("reinitialising native SSD1683 and performing final full refresh...")
     native_epaper_init()
-    buffer = make_test_screen()
-    log("EPD native full refresh:", len(buffer), "bytes")
-    epaper.full(buffer)
-    # This panel needs the native driver's explicit differential baseline
-    # before its first 0xFC partial waveform.  Without it BUSY can remain
-    # asserted until the timeout, which then forces a much slower recovery
-    # full refresh.  It costs one extra refresh only at boot.
-    log("EPD native synchronising partial-update RAM planes")
-    epaper.base_map(buffer)
-    log("display updated; touch the panel (Ctrl-C to stop)")
+    global pixels
+    pixels = neopixel.NeoPixel(Pin(WS2812_PIN, Pin.OUT), WS2812_COUNT, bpp=3)
+    prompt, labels, target, reference = make_stage()
+    buffer = render_stage(prompt, labels)
+    set_indicators()
+    reference_index = STEP_1[prompt]
+    log("RULE: display=%s -> read %s button (%s) -> priority=%s -> press %s" %
+        (prompt, POSITION_NAMES[reference_index], reference,
+         ", ".join(PRIORITY[reference]), target))
 
     previous = None
     active_buttons = {}  # FT6336 touch id -> momentarily inverted button index
     while True:
-        touches = touch.read_touches()
+        if STATUS["passed"]:
+            # Solved modules ignore physical input until the master explicitly
+            # starts the next bomb with a CAN payload beginning RESET.
+            if poll_can_reset():
+                STATUS.update({"passed": False, "failed": False, "in_progress": True,
+                               "strikes": 0, "stage": 1})
+                prompt, labels, target, reference = make_stage()
+                buffer = render_stage(prompt, labels)
+                set_indicators()
+                log("module reset; new stage target=", target)
+            sleep_ms(40)
+            continue
+        try:
+            touches = touch.read_touches()
+        except OSError as error:
+            log("touch I2C error", error, "; retrying")
+            sleep_ms(100)
+            continue
         current = tuple(touches)
         if current != previous:
             if current:
@@ -245,7 +449,32 @@ def main():
             if event == "up":
                 button_index = active_buttons.pop(touch_id, None)
                 if button_index is not None:
-                    restore_button_with_full_refresh(buffer, button_index)
+                    pressed = labels[button_index]
+                    if pressed == target:
+                        log("correct:", pressed)
+                        STATUS["stage"] += 1
+                        if STATUS["stage"] == 4:
+                            STATUS["passed"] = True
+                            STATUS["in_progress"] = False
+                            set_indicators()
+                            epaper.detach()
+                            tft.text("SOLVED")
+                            epaper.attach()
+                            buffer = refresh_epaper(make_solved_screen())
+                            log("MODULE SOLVED", STATUS)
+                        else:
+                            set_indicators()
+                            prompt, labels, target, reference = make_stage()
+                            buffer = render_stage(prompt, labels)
+                            reference_index = STEP_1[prompt]
+                            log("RULE: display=%s -> read %s button (%s) -> priority=%s -> press %s" %
+                                (prompt, POSITION_NAMES[reference_index], reference,
+                                 ", ".join(PRIORITY[reference]), target))
+                    else:
+                        STATUS["strikes"] += 1
+                        log("STRIKE pressed=", pressed, "expected=", target, "count=", STATUS["strikes"])
+                        set_indicators()
+                        buffer = render_stage(prompt, labels)
                 continue
             if event != "contact" or touch_id in active_buttons:
                 continue
@@ -257,18 +486,39 @@ def main():
             active_buttons[touch_id] = button_index
             log("button", button_index + 1, "contact; inverting", rect)
             log("EPD native partial x=%d y=%d w=%d h=%d" % rect)
-            epaper.partial(buffer, *rect)
-            epaper.detach()
-            log("TFT showing button", button_index + 1)
-            tft.show_digit(button_index + 1)
-            epaper.attach()
+            partial_or_recover(buffer, rect)
 
-        # Some FT6336 firmware revisions report a release as zero touches
-        # rather than a final point with event=up.  Restore those too.
+        # Some FT6336 firmware revisions report release as zero touches rather
+        # than a final point with event=up. Evaluate that press identically.
         for touch_id in tuple(active_buttons):
             if touch_id not in seen_ids:
                 button_index = active_buttons.pop(touch_id)
-                restore_button_with_full_refresh(buffer, button_index)
+                pressed = labels[button_index]
+                if pressed == target:
+                    log("correct:", pressed)
+                    STATUS["stage"] += 1
+                    if STATUS["stage"] == 4:
+                        STATUS["passed"] = True
+                        STATUS["in_progress"] = False
+                        set_indicators()
+                        epaper.detach()
+                        tft.text("SOLVED")
+                        epaper.attach()
+                        buffer = refresh_epaper(make_solved_screen())
+                        log("MODULE SOLVED", STATUS)
+                    else:
+                        set_indicators()
+                        prompt, labels, target, reference = make_stage()
+                        buffer = render_stage(prompt, labels)
+                        reference_index = STEP_1[prompt]
+                        log("RULE: display=%s -> read %s button (%s) -> priority=%s -> press %s" %
+                            (prompt, POSITION_NAMES[reference_index], reference,
+                             ", ".join(PRIORITY[reference]), target))
+                else:
+                    STATUS["strikes"] += 1
+                    log("STRIKE pressed=", pressed, "expected=", target, "count=", STATUS["strikes"])
+                    set_indicators()
+                    buffer = render_stage(prompt, labels)
         sleep_ms(40)
 
 
