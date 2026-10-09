@@ -5,4 +5,4 @@ led = Pin(21, Pin.OUT)  # XIAO ESP32-S3 built-in LED
 
 while True:
     led.value(not led.value())
-    sleep(0.5)
+    sleep(0.1)

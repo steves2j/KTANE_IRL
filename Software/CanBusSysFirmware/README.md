@@ -62,9 +62,9 @@ They do not flash unless `flash.sh` is invoked.
 At the REPL, validate the compiled built-in module:
 
 ```python
-import nativecan
-print(nativecan.hello())
-# nativecan module loaded
+import mcp2518
+print(mcp2518.hello())
+# mcp2518 module loaded
 ```
 
 ## VS Code

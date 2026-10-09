@@ -22,6 +22,17 @@ require_command() { command -v "$1" >/dev/null 2>&1 || fail "missing '$1'. ${2:-
 
 activate_idf() {
     [[ -f "${ESP_IDF_DIR}/export.sh" ]] || fail "ESP-IDF is missing at ${ESP_IDF_DIR}; run scripts/setup-macos.sh."
+
+    # A command such as scripts/flash.sh starts a fresh Bash process, so it
+    # cannot rely on a caller having sourced init.sh.  Always discard a stale
+    # IDF virtualenv selection and put the interpreter used to configure this
+    # project's build (Homebrew Python 3.14) first on PATH.
+    unset IDF_PYTHON_ENV_PATH ESP_PYTHON
+    if [[ -x /usr/local/opt/python@3.14/bin/python3 ]]; then
+        export PATH="/usr/local/opt/python@3.14/bin:${PATH}"
+    else
+        fail "Homebrew Python 3.14 is required at /usr/local/opt/python@3.14/bin/python3."
+    fi
     # shellcheck disable=SC1091
     source "${ESP_IDF_DIR}/export.sh" >/dev/null
     require_command idf.py "ESP-IDF environment activation failed; run scripts/setup-macos.sh."
