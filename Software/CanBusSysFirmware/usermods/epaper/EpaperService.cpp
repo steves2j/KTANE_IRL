@@ -30,11 +30,9 @@ struct State {
     spi_device_handle_t spi = nullptr;
     SemaphoreHandle_t mutex = nullptr;
     bool initialized = false;
-    bool partial_mode_ready = false;
     esp_err_t last_error = ESP_OK;
     EpaperPins pins{};
     bool pins_configured = false;
-    bool bus_owned = false;
 };
 
 State g_state;
@@ -165,7 +163,6 @@ esp_err_t recover_with_full_refresh(const uint8_t *framebuffer) {
     // Reinitialise and put the supplied full frame in both SSD1683 planes.
     log_line("partial refresh stalled; recovering with normal full refresh");
     g_state.initialized = false;
-    g_state.partial_mode_ready = false;
     esp_err_t error = full_init();
     if (error != ESP_OK) return error;
     if ((error = command(0x26)) != ESP_OK || (error = send_framebuffer(framebuffer)) != ESP_OK ||
@@ -175,9 +172,7 @@ esp_err_t recover_with_full_refresh(const uint8_t *framebuffer) {
         (error = data_byte(0xF7)) != ESP_OK || (error = command(0x20)) != ESP_OK) {
         return error;
     }
-    const esp_err_t refresh_error = wait_for_busy_cycle("partial recovery full refresh");
-    if (refresh_error == ESP_OK) g_state.partial_mode_ready = true;
-    return refresh_error;
+    return wait_for_busy_cycle("partial recovery full refresh");
 }
 
 bool same_pins(const EpaperPins &left, const EpaperPins &right) {
@@ -197,12 +192,10 @@ esp_err_t ensure_bus(const EpaperPins *pins = nullptr) {
         if (!pins || same_pins(g_state.pins, *pins)) return ESP_OK;
         // Reconfiguration is only allowed through init(); no display transfer
         // can be in progress because init owns the service mutex.
-        if (!g_state.bus_owned) return ESP_ERR_INVALID_STATE;
         spi_bus_remove_device(g_state.spi);
         spi_bus_free(kSpiHost);
         g_state.spi = nullptr;
         g_state.initialized = false;
-        g_state.bus_owned = false;
         log_line("reconfiguring SPI bus for new pin assignment");
         if (g_state.mutex) {
             vSemaphoreDelete(g_state.mutex);
@@ -246,27 +239,14 @@ esp_err_t ensure_bus(const EpaperPins *pins = nullptr) {
     bus.quadwp_io_num = -1;
     bus.quadhd_io_num = -1;
     bus.max_transfer_sz = kBytesPerRow;
-    error = spi_bus_initialize(kSpiHost, &bus, SPI_DMA_CH_AUTO);
-    if (error == ESP_OK) {
-        g_state.bus_owned = true;
-    } else if (error == ESP_ERR_INVALID_STATE) {
-        // A compatible SPI3 device, such as the ST7789 usermod, has already
-        // created the shared SCK/MOSI bus. Add only this display's CS device.
-        g_state.bus_owned = false;
-    } else {
-        return error;
-    }
+    if ((error = spi_bus_initialize(kSpiHost, &bus, SPI_DMA_CH_AUTO)) != ESP_OK) return error;
 
     spi_device_interface_config_t device{};
     device.clock_speed_hz = kSpiHz;
     device.mode = 0;
     device.spics_io_num = g_state.pins.cs;
     device.queue_size = 1;
-    if ((error = spi_bus_add_device(kSpiHost, &device, &g_state.spi)) != ESP_OK) {
-        if (g_state.bus_owned) spi_bus_free(kSpiHost);
-        g_state.bus_owned = false;
-        return error;
-    }
+    if ((error = spi_bus_add_device(kSpiHost, &device, &g_state.spi)) != ESP_OK) return error;
     return ESP_OK;
 }
 
@@ -279,19 +259,14 @@ esp_err_t full_init() {
     // this panel does not reliably pulse BUSY for software reset.
     vTaskDelay(pdMS_TO_TICKS(10));
     error = configure_full_ram();
-    if (error == ESP_OK) {
-        g_state.initialized = true;
-        g_state.partial_mode_ready = false;
-    }
+    if (error == ESP_OK) g_state.initialized = true;
     return error;
 }
 
 esp_err_t fast_init() {
     esp_err_t error = reset();
     if (error != ESP_OK) return error;
-    // This controller does not reliably assert BUSY for software reset.
-    if ((error = command(0x12)) != ESP_OK) return error;
-    vTaskDelay(pdMS_TO_TICKS(10));
+    if ((error = command(0x12)) != ESP_OK || (error = wait_ready("fast software reset")) != ESP_OK) return error;
     const uint8_t update_control[] = {0x40, 0x00};
     const uint8_t x_window[] = {0x00, 0x31};
     const uint8_t y_window[] = {0x2B, 0x01, 0x00, 0x00};
@@ -300,13 +275,8 @@ esp_err_t fast_init() {
         (error = command(0x3C)) != ESP_OK || (error = data_byte(0x05)) != ESP_OK ||
         (error = command(0x1A)) != ESP_OK || (error = data_byte(0x6E)) != ESP_OK ||
         (error = command(0x22)) != ESP_OK || (error = data_byte(0x91)) != ESP_OK ||
-        (error = command(0x20)) != ESP_OK) {
-        return error;
-    }
-    // This panel performs the temperature-load step without a BUSY pulse.
-    // Give it the same fixed settle period used by the vendor/GxEPD2 flow.
-    vTaskDelay(pdMS_TO_TICKS(10));
-    if ((error = command(0x11)) != ESP_OK || (error = data_byte(0x01)) != ESP_OK ||
+        (error = command(0x20)) != ESP_OK || (error = wait_ready("fast temperature load")) != ESP_OK ||
+        (error = command(0x11)) != ESP_OK || (error = data_byte(0x01)) != ESP_OK ||
         (error = command(0x44)) != ESP_OK || (error = data(x_window, sizeof(x_window))) != ESP_OK ||
         (error = command(0x45)) != ESP_OK || (error = data(y_window, sizeof(y_window))) != ESP_OK ||
         (error = command(0x4E)) != ESP_OK || (error = data_byte(0x00)) != ESP_OK ||
@@ -347,7 +317,6 @@ esp_err_t EpaperService::full_refresh(const uint8_t *framebuffer, size_t length)
         (error = data_byte(0xF7)) != ESP_OK ||
         (error = command(0x20)) != ESP_OK) goto done;
     error = wait_for_busy_cycle("full refresh");
-    if (error == ESP_OK) g_state.partial_mode_ready = true;
 done:
     give_lock();
     log_line("full refresh %s (error=%d)", error == ESP_OK ? "complete" : "failed", error);
@@ -371,7 +340,6 @@ esp_err_t EpaperService::set_partial_base_map(const uint8_t *framebuffer, size_t
         (error = data_byte(0x00)) != ESP_OK || (error = command(0x22)) != ESP_OK ||
         (error = data_byte(0xF7)) != ESP_OK || (error = command(0x20)) != ESP_OK) goto done;
     error = wait_for_busy_cycle("partial baseline refresh");
-    if (error == ESP_OK) g_state.partial_mode_ready = true;
 done:
     give_lock();
     log_line("partial baseline %s (error=%d)", error == ESP_OK ? "complete" : "failed", error);
@@ -418,11 +386,6 @@ esp_err_t EpaperService::partial_refresh(const uint8_t *framebuffer, size_t leng
         }
         return ESP_OK;
     };
-
-    // A preceding normal full refresh writes both SSD1683 RAM planes and is
-    // a valid differential baseline.  Do not apply the unverified 0x91 fast
-    // sequence here: this panel does not assert BUSY for its resulting update.
-    g_state.partial_mode_ready = true;
 
     // This follows GxEPD2's SSD1683 differential-update sequence: write the
     // new rectangle, refresh with 0xFC, then mirror it into both RAM planes.

@@ -5,7 +5,7 @@ Touch: FT6336 at I2C address 0x38.
 
 XIAO ESP32-S3 wiring (D-pin labels):
   e-paper: DC D3, SS D7, SCK D8, MISO D9, MOSI D10, BUSY D2, RESET D1
-  touch:   SDA D4, SCL D5, RESET D0 (shared with TFT RESET)
+  touch:   SDA D4, SCL D5, RESET D0
 
 This is only a display/touch hardware test. It uses the firmware-built
 ``epaper`` usermod for SSD1683 transfers, and Python only for the retained
@@ -16,7 +16,6 @@ from machine import I2C, Pin
 from time import sleep_ms, ticks_diff, ticks_ms
 import framebuf
 import epaper
-import tft
 
 
 # XIAO ESP32-S3 GPIO numbers corresponding to the stated D-pin labels.
@@ -29,28 +28,7 @@ TOUCH_SDA = 5     # D4
 TOUCH_SCL = 6     # D5
 EPD_BUSY = 3      # D2; SSD1683 BUSY is active high on this module
 EPD_RESET = 2     # D1
-# TP_RESET shares the TFT RESET net. The native TFT initialisation performs the
-# one startup reset pulse; Python only probes FT6336 afterwards.
 TOUCH_RESET = 1  # D0
-
-# ST7789P3 2.25-inch 76x284 status display. It shares SPI3 SCK/D8, MOSI/D10
-# and DC/D3 with the e-paper panel, but has its own CS, reset and backlight.
-TFT_CS = 43       # D6
-TFT_RESET = 1     # D0
-TFT_BACKLIGHT = 13  # D14; low enables this module's backlight
-TFT_WIDTH = 76
-TFT_HEIGHT = 284
-TFT_SPI_HZ = 10_000_000
-WS2812_DATA = 10  # D11
-WS2812_COUNT = 4
-
-# The 76x284 active area is centred in ST7789P3's 240x320 GRAM.
-TFT_ROTATIONS = (
-    (0x00, 76, 284, 82, 18),
-    (0x60, 284, 76, 18, 82),
-    (0xC0, 76, 284, 82, 18),
-    (0xA0, 284, 76, 18, 82),
-)
 
 WIDTH = 400
 HEIGHT = 300
@@ -107,23 +85,6 @@ class FT6336:
             touch_id = data[offset + 2] >> 4
             touches.append((touch_id, self.EVENT_NAMES[event_code], x, y))
         return touches
-
-
-class TFTButtonDisplay:
-    """Show the latest e-paper button number on the ST7789 status TFT."""
-
-    def init(self):
-        log("TFT init: ST7789P3 CS/D6 RESET/D0 BL/D14; shared SPI3/DC D3")
-        tft.init(TFT_CS, EPD_DC, TFT_RESET, TFT_BACKLIGHT, EPD_SCK, EPD_MOSI)
-        # Startup wording belongs to the module's Python program.  The native
-        # usermod receives the text and performs the low-level TFT transfer.
-        tft.text("Who's on first")
-        log("TFT native status:", tft.status())
-        log("TFT ready: touch a numbered e-paper button to update it")
-
-    def show_number(self, number):
-        tft.show_digit(number)
-        log("TFT showing button", number)
 
 
 def draw_centered_text(canvas, label, center_x, center_y, scale=4):
@@ -200,7 +161,7 @@ def restore_button_with_full_refresh(buffer, button_index):
 
 
 def native_epaper_init():
-    """Initialise the compiled C/C++ SSD1683 usermod on the shared SPI3 bus."""
+    """Initialise the compiled C/C++ SSD1683 usermod on exclusive SPI3."""
     log("EPD native init: SPI3, CS/D7 DC/D3 RESET/D1 BUSY/D2 SCK/D8 MOSI/D10")
     epaper.init(EPD_CS, EPD_DC, EPD_RESET, EPD_BUSY, EPD_SCK, EPD_MOSI)
     log("EPD native status:", epaper.status())
@@ -223,15 +184,10 @@ def make_test_screen():
 def main():
     log("Who's on First e-paper/touch bring-up (native SSD1683 usermod)")
     log("EPD native SPI: DC D3, SS D7, SCK D8, MOSI D10, BUSY D2, RESET D1")
-    log("Touch I2C: SDA D4, SCL D5, RESET D0 (shared with TFT RESET)")
+    log("Touch I2C: SDA D4, SCL D5, RESET D0")
 
-    # Native TFT init supplies the shared D0 reset pulse for both TFT and
-    # FT6336. Do it before probing the touch controller.
-    tft = TFTButtonDisplay()
-    tft.init()
-    sleep_ms(200)
     touch = FT6336()
-    touch.init(reset=False)
+    touch.init(reset=True)
     log("initialising native SSD1683 and performing full refresh...")
     native_epaper_init()
     buffer = make_test_screen()
@@ -277,10 +233,6 @@ def main():
             rect = invert_button(buffer, button_index)
             active_buttons[touch_id] = button_index
             log("button", button_index + 1, "contact; inverting", rect)
-            # The TFT retains the selected number until the next e-paper
-            # contact; releasing the e-paper button only restores its visual
-            # pressed state.
-            tft.show_number(button_index + 1)
             log("EPD native partial x=%d y=%d w=%d h=%d" % rect)
             epaper.partial(buffer, *rect)
 
